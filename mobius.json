@@ -1,12 +1,25 @@
 {
   "id": "slack-bridge",
+  "package_id": "urn:uuid:7dbe64bc-e48d-4155-84c8-e7a86a8276ef",
+  "moved_to": {
+    "manifest_url": "https://raw.githubusercontent.com/alenbrkic-cod/slack-bridge/main/mobius.json"
+  },
   "name": "Slack Bridge",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Use this Möbius from Slack: @mention or DM the bot and the agent answers in the thread.",
   "author": "alenbrkic-cod",
-  "homepage": "https://github.com/alenbrkic-cod/app-slack-bridge",
+  "homepage": "https://github.com/alenbrkic-cod/slack-bridge",
+  "license": "MIT",
   "entry": "index.jsx",
   "icon": "icon.png",
+  "store": {
+    "tagline": "Talk to your Möbius from Slack: mention the bot or DM it, and your agent answers in the thread.",
+    "description": "Slack Bridge lets you and the people you trust use your Möbius agent from Slack. @mention the bot in a channel or send it a direct message, and your agent works on your own Möbius and answers in the same Slack thread. Replies in that thread continue the same conversation, and every thread is also an ordinary chat in Möbius that you can open and continue there.\n\nNobody gets in until you say so. Anyone who tries the bot shows up in the app as an access request, and you get a notification. Tap Allow or Block. Until you decide, the bot doesn't answer them; their message just gets a ⏳. Allowed people get a direct message from the bot telling them they're in. Guests and other bots are always ignored. Each request runs as you, with your agent's full access to this Möbius, so allow only people you trust with that.\n\nYou bring your own Slack app. The app window lists exactly what to set in Slack: turn on Socket Mode, add the bot scopes and events (copy buttons included), and reinstall. Then add the bot token and the app-level token through your Möbius key vault. The app itself never sees the tokens, and they are only ever sent to slack.com. Socket Mode means your Möbius needs no public web address for Slack to reach.\n\nA background job keeps the Slack connection open and Möbius restarts it by itself every minute if it stops. The app shows whether it's connected, which version is running, and recent requests. Use one Slack app per Möbius: Slack splits messages between every connection that holds the same tokens.",
+    "screenshots": [
+      {"src": "static/store/main.png", "alt": "Slack Bridge window showing Connected to Slack as @Möbius in Northwind, with one access request from Maya Chen with Allow and Block buttons, and two allowed people, Sam Rivera and Priya Patel.", "label": "Connected, with an access request waiting"},
+      {"src": "static/store/setup.png", "alt": "Slack Bridge on first run: Waiting for Slack keys, nobody allowed yet, both Slack tokens marked Not added with an Add Slack tokens button, and numbered Slack app settings with copyable bot scopes and events.", "label": "First run: everything to set up in one place"}
+    ]
+  },
   "offline_capable": false,
   "embeds_agent": true,
   "agent": {

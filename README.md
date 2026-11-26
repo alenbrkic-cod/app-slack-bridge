@@ -1,5 +1,7 @@
 # Slack Bridge
 
+> **This repository has moved to [alenbrkic-cod/slack-bridge](https://github.com/alenbrkic-cod/slack-bridge)**, and Slack Bridge is now in the Möbius App Store. Install it from the Store. An install from this repository moves over when you install the Store version.
+
 Use your Möbius from Slack. @mention the bot in a channel or send it a direct
 message. The Möbius agent works on your server and answers in the Slack thread.
 Replies in that thread continue the same conversation.
@@ -54,3 +56,7 @@ across every open connection.
 ```bash
 python3 -m pytest -q tests
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
