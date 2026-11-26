@@ -17,16 +17,22 @@ Replies in that thread continue the same conversation.
 
 ## Who can use it
 
-Only the people on the owner's list, managed in the app window. They can use
-the bot from any channel or by DM. Everyone else is privately turned away and
-shows up under Recent requests with an **Allow** button. Guests and other bots
-are always refused. With no list saved, nobody is answered.
+Only people the owner has allowed. Anyone else who @mentions or DMs the bot
+becomes an **access request** in the app window. They are told their request
+went to the owner, and the owner gets one push notification per new person.
+The owner taps **Allow** or **Block**:
 
-The list, not channel membership, is the control: on standard Slack plans any
-workspace member can invite an installed app to their channels. The bridge
-reads the list for every message, so removing someone takes effect on their
-next message. Each request runs with the owner's full access to this Möbius,
-so list only people you trust with that.
+- Allowed people can use the bot from any channel or by DM, until blocked.
+- Blocked people are turned away without creating new requests, until allowed.
+- Guests and other bots are always refused. Until the owner allows someone,
+  nobody is answered, the owner included: try the bot once and allow yourself.
+
+The owner's per-person decision, not channel membership, is the control: on
+standard Slack plans any workspace member can invite an installed app to their
+channels. The bridge reads the decisions for every message, so a change takes
+effect on the person's next message. If they can't be read, nobody gets in.
+Each request runs with the owner's full access to this Möbius, so allow only
+people you trust with that.
 
 ## Setup
 

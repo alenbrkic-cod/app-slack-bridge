@@ -48,9 +48,6 @@ class FakeApi:
       return {"ok": True, "user": self.users[params["user"]]}
     if method == "conversations.info":
       return {"ok": True, "channel": {"name": "dev"}}
-    if method == "users.list":
-      return {"ok": True, "members": list(self.users.values()) + [
-        {"id": "UBOTX", "is_bot": True}, {"id": "USLACKBOT", "name": "slackbot"}]}
     if method == "apps.connections.open":
       return {"ok": True, "url": self.ws_url}
     return {"ok": True}
@@ -75,16 +72,26 @@ class FakeApi:
       raise RuntimeError("POST /api/app-chats/x/embed-capability -> 403")
     return self.chats[chat_id]
 
-  # The owner's list in the app's storage; None means never saved (404).
-  access = {"people": [{"id": "UANA", "name": "Ana Kovač"}]}
+  # The owner's decisions in the app's storage; None means never saved (404),
+  # "broken" means storage answered with an error.
+  access = {"allowed": [{"id": "UANA", "name": "Ana Kovač"}], "blocked": []}
 
   def request(self, method, path, body=None, **_):
     self.mobius.append((method, path, body))
     if method == "GET" and path.endswith("/access.json"):
       if self.access is None:
         return 404, {}, b'{"detail":"Not found"}'
+      if self.access == "broken":
+        return 503, {}, b'{"detail":"unavailable"}'
       return 200, {}, json.dumps(self.access).encode()
     return 200, {}, b"{}"
+
+  def pushes(self):
+    return [body for m, p, body in self.mobius if p == "/api/notifications/send"]
+
+  def saved_requests(self):
+    saved = [body for m, p, body in self.mobius if m == "PUT" and p.endswith("/requests.json")]
+    return saved[-1]["requests"] if saved else []
 
   def answer(self, chat_id, text, *, mid="a1", question=False, tool_first=True):
     blocks = []
@@ -169,28 +176,76 @@ def test_guests_are_refused_privately(tmp_path):
   assert params["user"] == "UGST" and "guests" in params["text"]
 
 
-def test_someone_not_on_the_list_is_refused_wherever_the_bot_was_invited(tmp_path):
+def test_someone_new_becomes_an_access_request_and_the_owner_hears_once(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="1.1", channel="CDEV")))
-  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="1.2", channel="DOUT")))
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi again", ts="1.2", channel="DOUT")))
   assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
   [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
-  assert ephemeral["user"] == "UOUT" and "not on the list" in ephemeral["text"]
-  assert "not on the list" in api.posts()[0]["blocks"][0]["text"]
-  refusal = b.state.data["activity"][0]
-  assert refusal["outcome"] == "refused" and refusal["addable"] and refusal["user"] == "UOUT"
+  assert ephemeral["user"] == "UOUT" and "asked the Möbius owner" in ephemeral["text"]
+  assert "still waiting" in api.posts()[0]["blocks"][0]["text"]
+  [request] = api.saved_requests()
+  assert request["id"] == "UOUT" and request["count"] == 2 and request["where"] == "a direct message to the Möbius bot"
+  [push] = api.pushes()
+  assert "asked to use the Möbius bot in #dev" in push["body"] and push["target"] == "/shell/?app=7"
 
 
-def test_with_no_list_saved_nobody_is_answered(tmp_path):
+def test_a_blocked_person_is_turned_away_without_a_new_request(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
+  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="1.1", channel="CDEV")))
+  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
+  assert "don't have access" in ephemeral["text"]
+  assert not api.saved_requests() and not api.pushes()
+
+
+def test_allowing_a_requester_lets_their_next_message_through(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+
+  async def flow():
+    await b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="1.1", channel="DOUT"))
+    api.access = {"allowed": [{"id": "UOUT"}], "blocked": []}
+    await b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="1.2", channel="DOUT"))
+    api.answer("chat-1", "Hello.")
+    await settle(b)
+
+  asyncio.run(flow())
+  assert sum(p == "/api/app-chats/start" for _, p, _ in api.mobius) == 1
+
+
+def test_the_list_saved_by_version_0_2_still_counts(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  api.access = {"people": [{"id": "UANA"}]}
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UANA", text="hi", ts="1.1", channel="DANA")))
+  assert any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
+  for task in b.watchers.values():
+    task.cancel()
+
+
+def test_with_nothing_decided_yet_even_the_first_person_must_be_approved(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   api.access = None
   asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UANA", text="hi", ts="1.1", channel="DANA")))
   assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
+  assert [r["id"] for r in api.saved_requests()] == ["UANA"]
 
 
-def test_removing_someone_takes_effect_on_their_next_message(tmp_path):
+def test_when_decisions_cannot_be_read_nobody_gets_in_and_nothing_is_requested(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  api.access = "broken"
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UANA", text="hi", ts="1.1", channel="DANA")))
+  assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
+  assert not api.saved_requests()
+  assert "can't check access" in api.posts()[0]["blocks"][0]["text"]
+
+
+def test_blocking_someone_takes_effect_on_their_next_message(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
 
@@ -198,14 +253,14 @@ def test_removing_someone_takes_effect_on_their_next_message(tmp_path):
     await b.on_event(ev(type="app_mention", user="UANA", text=f"<@{BOT}> one", ts="1.0", channel="CDEV"))
     api.answer("chat-1", "First.")
     await settle(b)
-    api.access = {"people": []}
+    api.access = {"allowed": [], "blocked": [{"id": "UANA"}]}
     await b.on_event(ev(type="message", channel_type="channel", user="UANA", text="two", ts="1.5", thread_ts="1.0", channel="CDEV"))
 
   asyncio.run(flow())
   assert not any(p.endswith("/messages") for _, p, _ in api.mobius)
 
 
-def test_an_unlisted_person_cannot_continue_someone_elses_thread(tmp_path):
+def test_someone_not_allowed_cannot_continue_someone_elses_thread(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
 
@@ -218,13 +273,6 @@ def test_an_unlisted_person_cannot_continue_someone_elses_thread(tmp_path):
   asyncio.run(flow())
   assert not any(p.endswith("/messages") for _, p, _ in api.mobius)
   assert any(m == "chat.postEphemeral" and p["user"] == "UOUT" for m, p in api.calls)
-
-
-def test_the_window_gets_people_to_pick_from_without_guests_or_bots(tmp_path):
-  api, b = make(tmp_path)
-  asyncio.run(b.publish_members())
-  [(_, _, body)] = [c for c in api.mobius if c[1].endswith("/members.json")]
-  assert [p["id"] for p in body["people"]] == ["UANA", "UOUT"]
 
 
 # Turns ----------------------------------------------------------------------

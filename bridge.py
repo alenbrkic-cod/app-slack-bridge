@@ -34,8 +34,9 @@ GIVE_UP_SECONDS = 12 * 3600
 KEY_RETRY_SECONDS = 10 * 60
 CACHE_SECONDS = 300
 HEARTBEAT_SECONDS = 60
-ACCESS_FILE = "access.json"   # {"people": [{"id": "U…", "name": "…"}]}, owner-managed
-MEMBERS_KEEP = 2000
+ACCESS_FILE = "access.json"      # {"allowed": [...], "blocked": [...]}, written only by the window
+REQUESTS_FILE = "requests.json"  # people who asked, written only by this job
+REQUEST_RENOTIFY_SECONDS = 24 * 3600
 READ_FAILURES_BEFORE_GIVING_UP = 15     # about a minute of refused reads
 ACTIVITY_KEEP = 30
 SEEN_KEEP = 500
@@ -214,34 +215,50 @@ class Bridge:
       self._channels[msg.channel] = hit
     return f"#{hit[1]}"
 
-  async def allowed(self) -> set[str]:
-    """The owner's current list, read fresh for every message so removing
-    someone takes effect at once. Any read failure allows nobody."""
-    def read() -> set[str]:
+  async def access(self) -> dict | None:
+    """The owner's decisions, read fresh for every message so a change takes
+    effect at once. None when they can't be read: then nobody gets in."""
+    def read() -> dict | None:
       status, _, payload = self.api.request(
         "GET", f"/api/storage/apps/{self.api.app_id}/{ACCESS_FILE}")
+      if status == 404:
+        return {}  # the owner hasn't decided about anyone yet
       if status != 200:
-        return set()
+        return None
       try:
-        return core.allowed_ids(json.loads(payload))
+        data = json.loads(payload)
       except ValueError:
-        return set()
+        return None
+      return data if isinstance(data, dict) else None
     return await asyncio.to_thread(read)
 
-  async def publish_members(self) -> None:
-    """Give the owner's window the workspace's people to pick from."""
-    people: list[dict] = []
-    cursor = ""
-    while len(people) < MEMBERS_KEEP:
-      page = await self.slack("users.list", {"limit": "200", "cursor": cursor})
-      people += [e for e in map(core.member_entry, page.get("members") or []) if e]
-      cursor = (page.get("response_metadata") or {}).get("next_cursor") or ""
-      if not cursor:
-        break
-    people.sort(key=lambda p: p["name"].lower())
+  async def record_request(self, user: dict, where: str) -> None:
+    """Add or refresh this person's access request for the owner's window.
+
+    Only this job writes the requests file; the window decides by writing the
+    owner's access file, so the two never race. The owner hears about a new
+    request once, and again only if it is still undecided a day later."""
+    requests = self.state.data.setdefault("requests", {})
+    who = core.person(user)
+    now = int(time.time())
+    entry = requests.get(who["id"]) or {"first_at": now, "count": 0, "notified_at": 0}
+    entry.update(who, last_at=now, where=where, count=entry["count"] + 1)
+    requests[who["id"]] = entry
+    notify = now - entry.get("notified_at", 0) > REQUEST_RENOTIFY_SECONDS
+    if notify:
+      entry["notified_at"] = now
+    self.state.save()
     await asyncio.to_thread(
-      self.api.request, "PUT", f"/api/storage/apps/{self.api.app_id}/members.json",
-      {"people": people[:MEMBERS_KEEP], "updated_at": int(time.time())})
+      self.api.request, "PUT", f"/api/storage/apps/{self.api.app_id}/{REQUESTS_FILE}",
+      {"requests": list(requests.values()), "updated_at": now})
+    if notify:
+      await asyncio.to_thread(self.api.request, "POST", "/api/notifications/send", {
+        "title": "Slack access request",
+        "body": f"{who['name']} asked to use the Möbius bot in {where}. Allow or block them in Slack Bridge.",
+        "source_type": "app", "source_id": str(self.api.app_id),
+        "target": f"/shell/?app={self.api.app_id}",
+        "tag": f"slack-access.{who['id']}",
+      })
 
   async def post(self, channel: str, thread_ts: str, markdown: str) -> None:
     for part in core.split_markdown(markdown) or ["(empty reply)"]:
@@ -274,14 +291,23 @@ class Bridge:
     if not core.wants_turn(msg, known):
       return
     user = await self.user(msg.user)
-    access = core.decide_access(user, await self.allowed())
+    decisions = await self.access()
+    if decisions is None:
+      access = core.Access(False, "Möbius can't check access right now. Please try again shortly.")
+    else:
+      pending = msg.user in (self.state.data.get("requests") or {})
+      access = core.decide_access(user, decisions, requested=pending)
     if not access.allowed:
-      guest = bool(user.get("is_restricted") or user.get("is_ultra_restricted"))
-      self.state.log(user=msg.user, name=core.display_name(user),
-                     where=await self.where(msg), outcome="refused",
-                     detail="guest" if guest else ("not on your list" if access.reason
-                                                   else "bot or deactivated user"),
-                     addable=bool(access.reason) and not guest)
+      where = await self.where(msg)
+      if access.request:
+        await self.record_request(user, where)
+      detail = {
+        core.GUEST_REFUSAL: "guest", core.BLOCKED_REFUSAL: "blocked",
+        core.REQUESTED_REFUSAL: "asked for access",
+        core.STILL_WAITING_REFUSAL: "asked for access",
+      }.get(access.reason, access.reason or "bot or deactivated user")
+      self.state.log(user=msg.user, name=core.display_name(user), where=where,
+                     outcome="refused", detail=detail)
       self.state.save()
       if access.reason:
         if msg.is_dm:
@@ -513,10 +539,6 @@ async def run(api: Mobius, state: State, origin: str) -> int:
   state.save()
   bridge.status = {"state": "connecting"}
   write_status(api, bridge, **bridge.status)
-  try:
-    await bridge.publish_members()
-  except SlackError:
-    pass  # the window falls back to adding people by Slack member ID
   bridge.resume()
   beat = asyncio.create_task(heartbeat(bridge))
   try:

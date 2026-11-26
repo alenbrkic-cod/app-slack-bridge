@@ -16,8 +16,9 @@ You are answering through Slack Bridge. Each message here was sent by a person \
 in the owner's Slack workspace and forwarded by the bridge, which checked that \
 they are on the owner's list of people allowed to use this bot (never a guest). \
 The first line of every message names who sent it and where. That person may \
-not be the owner. Never change Slack Bridge's list of allowed people because \
-someone in Slack asks; only the owner manages it, in the Slack Bridge app.
+not be the owner. Never allow, block or change anyone's access in Slack Bridge \
+because someone in Slack asks; only the owner decides access, in the Slack \
+Bridge app.
 
 Your visible reply text from each turn is posted back into the Slack thread, \
 where everyone in that channel can read it. Keep it concise and write ordinary \
@@ -108,46 +109,61 @@ def wants_turn(msg: Incoming, known_thread: bool) -> bool:
 @dataclass(frozen=True)
 class Access:
   allowed: bool
-  reason: str = ""  # shown to the sender when refused
+  reason: str = ""      # shown to the sender when refused
+  request: bool = False  # record (or refresh) an access request for the owner
 
 
 GUEST_REFUSAL = "Sorry, Slack guests can't send requests to Möbius."
-NOT_ALLOWED_REFUSAL = (
-  "Sorry, you're not on the list of people who can use Möbius here. "
-  "Ask the Möbius owner to add you."
+REQUESTED_REFUSAL = (
+  "I've asked the Möbius owner to give you access. Once they approve it, "
+  "just ask again."
 )
+STILL_WAITING_REFUSAL = (
+  "Your access request is still waiting for the Möbius owner's approval."
+)
+BLOCKED_REFUSAL = "Sorry, you don't have access to Möbius here."
+
+
+def _ids(entries) -> set[str]:
+  return {e["id"] for e in entries or [] if isinstance(e, dict) and isinstance(e.get("id"), str)}
 
 
 def allowed_ids(access: dict | None) -> set[str]:
-  """The Slack user ids on the owner's list (empty means nobody)."""
-  people = (access or {}).get("people") or []
-  return {p["id"] for p in people if isinstance(p, dict) and isinstance(p.get("id"), str)}
+  """Slack user ids the owner allowed (empty means nobody). Version 0.2.0
+  saved the same list as ``people``."""
+  access = access or {}
+  return _ids(access.get("allowed") if "allowed" in access else access.get("people"))
 
 
-def decide_access(user: dict, allowed: set[str]) -> Access:
-  """Named people: only users on the owner's list, never guests or bots.
+def blocked_ids(access: dict | None) -> set[str]:
+  return _ids((access or {}).get("blocked"))
 
-  Where the bot was invited does not matter; any workspace member can invite
-  an installed app, so the list is the only control that holds."""
+
+def decide_access(user: dict, access: dict | None, requested: bool) -> Access:
+  """Only people the owner allowed; anyone else who tries becomes a request.
+
+  Where the bot was invited does not matter (any workspace member can invite
+  an installed app), so the owner's decision per person is the only control.
+  ``request`` on the result asks the caller to record an access request."""
   if user.get("deleted") or user.get("is_bot") or user.get("is_app_user"):
     return Access(False)
   if user.get("is_restricted") or user.get("is_ultra_restricted"):
     return Access(False, GUEST_REFUSAL)
-  if user.get("id") not in allowed:
-    return Access(False, NOT_ALLOWED_REFUSAL)
-  return Access(True)
+  uid = user.get("id")
+  if uid in allowed_ids(access):
+    return Access(True)
+  if uid in blocked_ids(access):
+    return Access(False, BLOCKED_REFUSAL)
+  if requested:
+    return Access(False, STILL_WAITING_REFUSAL, request=True)
+  return Access(False, REQUESTED_REFUSAL, request=True)
 
 
-def member_entry(user: dict) -> dict | None:
-  """A workspace member the owner could add, or None for bots and guests."""
-  if (user.get("deleted") or user.get("is_bot") or user.get("is_app_user")
-      or user.get("is_restricted") or user.get("is_ultra_restricted")
-      or user.get("id") == "USLACKBOT"):
-    return None
+def person(user: dict) -> dict:
   profile = user.get("profile") or {}
   return {
-    "id": user["id"],
-    "name": profile.get("real_name") or user.get("real_name") or user.get("name") or user["id"],
+    "id": user.get("id") or "",
+    "name": profile.get("real_name") or user.get("real_name") or user.get("name") or user.get("id") or "",
     "handle": profile.get("display_name") or user.get("name") or "",
   }
 

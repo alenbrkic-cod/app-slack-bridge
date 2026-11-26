@@ -1,7 +1,7 @@
 {
   "id": "slack-bridge",
   "name": "Slack Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Use this Möbius from Slack: @mention or DM the bot and the agent answers in the thread.",
   "author": "alenbrkic-cod",
   "homepage": "https://github.com/alenbrkic-cod/app-slack-bridge",

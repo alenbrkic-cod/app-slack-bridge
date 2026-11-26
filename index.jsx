@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import {
-  CheckCircleFilled, Copy, ExclamationMarkCircle, Key, Reload, Chat, Plus,
+  CheckCircleFilled, Copy, ExclamationMarkCircle, Key, Reload, Chat,
 } from '@openai/apps-sdk-ui/components/Icon'
 import { People, PEOPLE_CSS, usePeople } from './People.jsx'
 
@@ -222,9 +222,9 @@ export default function App({ token }) {
         <section className="sb-card">
           <h2>Who can use it</h2>
           <p className="sb-sub" style={{ marginBottom: 12 }}>
-            Only these people, from any channel or by direct message. Each request runs as
-            you with full access to this Möbius. Everyone else is privately turned away,
-            wherever the bot was invited.
+            Anyone who tries the bot in Slack shows up here as a request. Allowed people can
+            use it from any channel or by direct message, and each request runs as you with
+            full access to this Möbius. Everyone else is privately turned away.
           </p>
           <People state={people} />
         </section>
@@ -265,7 +265,7 @@ export default function App({ token }) {
             </li>
             <li><b>App Home</b>: turn on the Messages tab and allow people to send messages to the app.</li>
             <li><b>Reinstall</b> the app to the workspace, then copy the Bot User OAuth Token.</li>
-            <li>In Slack, <b>invite the bot</b> to the channels where you want to use it: <span className="sb-chip">/invite @Möbius</span>. Only people on your list above get answers there.</li>
+            <li>In Slack, <b>invite the bot</b> to the channels where you want to use it: <span className="sb-chip">/invite @Möbius</span>. Only people you allow above get answers there.</li>
           </ol>
         </section>
 
@@ -283,12 +283,6 @@ export default function App({ token }) {
                   {a.outcome === 'sent' ? 'Sent to Möbius' : a.outcome === 'refused' ? `Turned away (${a.detail || 'not allowed'})` : `${a.outcome}${a.detail ? `: ${a.detail}` : ''}`} · {ago(a.at)}
                 </div>
               </div>
-              {a.outcome === 'refused' && a.addable && a.user && !people.allowedIds.has(a.user) && (
-                <button type="button" className="sb-link"
-                  onClick={() => people.add({ id: a.user, name: a.name || a.user })}>
-                  <Plus width={16} height={16} />Allow
-                </button>
-              )}
               {a.chat_id && (
                 <button type="button" className="sb-link"
                   onClick={() => window.parent.postMessage({ type: 'moebius:open-chat', chatId: a.chat_id }, '*')}>
