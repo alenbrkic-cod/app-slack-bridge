@@ -37,6 +37,9 @@ HEARTBEAT_SECONDS = 60
 ACCESS_FILE = "access.json"      # {"allowed": [...], "blocked": [...]}, written only by the window
 REQUESTS_FILE = "requests.json"  # people who asked, written only by this job
 REQUEST_RENOTIFY_SECONDS = 24 * 3600
+WAITING_REACTION = "hourglass_flowing_sand"  # on a message whose sender awaits access
+WAITING_KEEP = 5
+DECISION_POLL_SECONDS = 15  # how soon an Allow reaches the person waiting
 READ_FAILURES_BEFORE_GIVING_UP = 15     # about a minute of refused reads
 ACTIVITY_KEEP = 30
 SEEN_KEEP = 500
@@ -232,25 +235,31 @@ class Bridge:
       return data if isinstance(data, dict) else None
     return await asyncio.to_thread(read)
 
-  async def record_request(self, user: dict, where: str) -> None:
+  async def record_request(self, user: dict, where: str, msg: core.Incoming) -> None:
     """Add or refresh this person's access request for the owner's window.
 
     Only this job writes the requests file; the window decides by writing the
     owner's access file, so the two never race. The owner hears about a new
-    request once, and again only if it is still undecided a day later."""
+    request once, and again only if it is still undecided a day later. The
+    message gets a waiting reaction everyone can see, and its place is kept
+    so the person can be told in that thread once the owner decides."""
     requests = self.state.data.setdefault("requests", {})
     who = core.person(user)
     now = int(time.time())
     entry = requests.get(who["id"]) or {"first_at": now, "count": 0, "notified_at": 0}
-    entry.update(who, last_at=now, where=where, count=entry["count"] + 1)
+    if entry.get("resolved"):  # asked before, decided, and now neither again
+      entry = {"first_at": now, "count": 0, "notified_at": 0}
+    waiting = (entry.get("waiting") or []) + [
+      {"channel": msg.channel, "ts": msg.ts, "thread_ts": msg.thread_ts, "dm": msg.is_dm}]
+    entry.update(who, last_at=now, where=where, count=entry["count"] + 1,
+                 waiting=waiting[-WAITING_KEEP:])
     requests[who["id"]] = entry
     notify = now - entry.get("notified_at", 0) > REQUEST_RENOTIFY_SECONDS
     if notify:
       entry["notified_at"] = now
     self.state.save()
-    await asyncio.to_thread(
-      self.api.request, "PUT", f"/api/storage/apps/{self.api.app_id}/{REQUESTS_FILE}",
-      {"requests": list(requests.values()), "updated_at": now})
+    await self.react(True, msg.channel, msg.ts, WAITING_REACTION)
+    await self.publish_requests()
     if notify:
       await asyncio.to_thread(self.api.request, "POST", "/api/notifications/send", {
         "title": "Slack access request",
@@ -259,6 +268,53 @@ class Bridge:
         "target": f"/shell/?app={self.api.app_id}",
         "tag": f"slack-access.{who['id']}",
       })
+
+  async def publish_requests(self) -> None:
+    requests = self.state.data.get("requests") or {}
+    await asyncio.to_thread(
+      self.api.request, "PUT", f"/api/storage/apps/{self.api.app_id}/{REQUESTS_FILE}",
+      {"requests": [r for r in requests.values() if not r.get("resolved")],
+       "updated_at": int(time.time())})
+
+  async def settle_requests(self) -> None:
+    """Tell waiting people the owner's answer: an allowed person hears it in
+    the thread they asked in; either way their waiting reaction comes off."""
+    requests = self.state.data.get("requests") or {}
+    open_ids = [uid for uid, r in requests.items() if not r.get("resolved")]
+    if not open_ids:
+      return
+    decisions = await self.access()
+    if decisions is None:
+      return
+    allowed, blocked = core.allowed_ids(decisions), core.blocked_ids(decisions)
+    changed = False
+    for uid in open_ids:
+      if uid not in allowed and uid not in blocked:
+        continue
+      entry = requests[uid]
+      entry["resolved"] = "allowed" if uid in allowed else "blocked"
+      changed = True
+      self.state.save()  # never tell anyone twice, even if posting fails below
+      waiting = entry.get("waiting") or []
+      for place in waiting:
+        await self.react(False, place["channel"], place["ts"], WAITING_REACTION)
+      if entry["resolved"] == "allowed":
+        if waiting:  # reply where they last asked; plain text so the @mention pings
+          last = waiting[-1]
+          notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
+                    "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
+        else:  # asked before the bridge kept the place: message them directly
+          notice = {"channel": uid, "text": core.ACCESS_GRANTED}
+        try:
+          await self.slack("chat.postMessage", notice, as_json=True)
+        except SlackError as exc:
+          self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
+                         detail=str(exc)[:200])
+      self.state.log(user=uid, name=entry.get("name"), where=entry.get("where"),
+                     outcome=entry["resolved"])
+    if changed:
+      self.state.save()
+      await self.publish_requests()
 
   async def post(self, channel: str, thread_ts: str, markdown: str) -> None:
     for part in core.split_markdown(markdown) or ["(empty reply)"]:
@@ -269,10 +325,10 @@ class Bridge:
         "unfurl_links": False,
       }, as_json=True)
 
-  async def react(self, add: bool, channel: str, ts: str) -> None:
+  async def react(self, add: bool, channel: str, ts: str, name: str = "eyes") -> None:
     try:
       await self.slack("reactions.add" if add else "reactions.remove",
-                       {"channel": channel, "timestamp": ts, "name": "eyes"})
+                       {"channel": channel, "timestamp": ts, "name": name})
     except SlackError:
       pass  # a reaction is a courtesy, never a reason to fail the turn
 
@@ -295,12 +351,13 @@ class Bridge:
     if decisions is None:
       access = core.Access(False, "Möbius can't check access right now. Please try again shortly.")
     else:
-      pending = msg.user in (self.state.data.get("requests") or {})
+      asked = (self.state.data.get("requests") or {}).get(msg.user) or {}
+      pending = bool(asked) and not asked.get("resolved")
       access = core.decide_access(user, decisions, requested=pending)
     if not access.allowed:
       where = await self.where(msg)
       if access.request:
-        await self.record_request(user, where)
+        await self.record_request(user, where, msg)
       detail = {
         core.GUEST_REFUSAL: "guest", core.BLOCKED_REFUSAL: "blocked",
         core.REQUESTED_REFUSAL: "asked for access",
@@ -313,10 +370,12 @@ class Bridge:
         if msg.is_dm:
           await self.post(msg.channel, msg.thread_ts, access.reason)
         else:
-          await self.slack("chat.postEphemeral", {
-            "channel": msg.channel, "user": msg.user, "text": access.reason,
-            "thread_ts": msg.thread_ts,
-          })
+          # Slack only shows a private note inside a thread that already has
+          # replies; for a fresh top-level mention it would silently vanish.
+          note = {"channel": msg.channel, "user": msg.user, "text": access.reason}
+          if msg.thread_ts != msg.ts:
+            note["thread_ts"] = msg.thread_ts
+          await self.slack("chat.postEphemeral", note)
       return
     lock = self.locks.setdefault(msg.scope, asyncio.Lock())
     async with lock:
@@ -506,6 +565,16 @@ async def heartbeat(bridge: Bridge) -> None:
     await asyncio.to_thread(write_status, bridge.api, bridge, **bridge.status)
 
 
+async def watch_decisions(bridge: Bridge) -> None:
+  """Pass the owner's Allow/Block on to the people waiting for it."""
+  while True:
+    await asyncio.sleep(DECISION_POLL_SECONDS)
+    try:
+      await bridge.settle_requests()
+    except Exception as exc:  # noqa: BLE001 - try again on the next round
+      bridge.state.log(outcome="error", detail=f"settling requests: {str(exc)[:200]}")
+
+
 async def guard(bridge: Bridge, payload: dict) -> None:
   try:
     await bridge.on_event(payload)
@@ -541,12 +610,14 @@ async def run(api: Mobius, state: State, origin: str) -> int:
   write_status(api, bridge, **bridge.status)
   bridge.resume()
   beat = asyncio.create_task(heartbeat(bridge))
+  decisions = asyncio.create_task(watch_decisions(bridge))
   try:
     await socket_loop(bridge, time.time() + RUN_SECONDS)
   except VaultDenied as exc:
     write_status(api, bridge, state="needs_keys", detail=str(exc)[:200])
   finally:
     beat.cancel()
+    decisions.cancel()
   if bridge.inflight:  # let requests already taken reach Möbius before handing over
     await asyncio.wait(bridge.inflight, timeout=60)
   write_status(api, bridge, state="restarting",

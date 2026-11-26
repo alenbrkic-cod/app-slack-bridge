@@ -189,6 +189,70 @@ def test_someone_new_becomes_an_access_request_and_the_owner_hears_once(tmp_path
   assert request["id"] == "UOUT" and request["count"] == 2 and request["where"] == "a direct message to the Möbius bot"
   [push] = api.pushes()
   assert "asked to use the Möbius bot in #dev" in push["body"] and push["target"] == "/shell/?app=7"
+  # A fresh mention has no thread yet, and Slack hides private notes there.
+  assert "thread_ts" not in ephemeral
+  waiting = [p for m, p in api.calls if m == "reactions.add" and p["name"] == "hourglass_flowing_sand"]
+  assert [p["timestamp"] for p in waiting] == ["1.1", "1.2"]
+
+
+def test_inside_an_existing_thread_the_private_note_stays_in_that_thread(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="2.5", thread_ts="2.0", channel="CDEV")))
+  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
+  assert ephemeral["thread_ts"] == "2.0"
+
+
+def test_allowing_a_requester_tells_them_once_where_they_asked(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="3.0", channel="CDEV")))
+  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hello?", ts="3.4", channel="CDEV")))
+  api.access = {"allowed": [{"id": "UANA"}, {"id": "UOUT"}], "blocked": []}
+  asyncio.run(b.settle_requests())
+  asyncio.run(b.settle_requests())
+  notices = [p for m, p in api.calls if m == "chat.postMessage" and "gave you access" in p.get("text", "")]
+  assert notices == [{"channel": "CDEV", "thread_ts": "3.4", "text": f"<@UOUT> {bridge.core.ACCESS_GRANTED}"}]
+  cleared = [p["timestamp"] for m, p in api.calls if m == "reactions.remove" and p["name"] == "hourglass_flowing_sand"]
+  assert cleared == ["3.0", "3.4"]
+  assert api.saved_requests() == []          # no longer shown as a request
+  assert b.state.data["activity"][0]["outcome"] == "allowed"
+
+
+def test_a_request_saved_by_0_3_without_its_place_is_answered_by_direct_message(tmp_path):
+  api, b = make(tmp_path)
+  b.state.data["requests"] = {"UOUT": {"id": "UOUT", "name": "out", "count": 1, "first_at": 1, "last_at": 1}}
+  api.access = {"allowed": [{"id": "UOUT"}], "blocked": []}
+  asyncio.run(b.settle_requests())
+  [notice] = [p for m, p in api.calls if m == "chat.postMessage"]
+  assert notice == {"channel": "UOUT", "text": bridge.core.ACCESS_GRANTED}
+
+
+def test_blocking_a_requester_clears_their_waiting_mark_quietly(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="4.0", channel="DOUT")))
+  api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
+  asyncio.run(b.settle_requests())
+  assert not any("gave you access" in str(p) for m, p in api.calls if m == "chat.postMessage")
+  assert any(m == "reactions.remove" and p["timestamp"] == "4.0" for m, p in api.calls)
+
+
+def test_someone_blocked_then_allowed_later_is_let_in(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="5.0", channel="DOUT")))
+  api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
+  asyncio.run(b.settle_requests())
+  api.access = {"allowed": [{"id": "UOUT"}], "blocked": []}
+
+  async def flow():
+    await b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi again", ts="5.5", channel="DOUT"))
+    api.answer("chat-1", "Hello.")
+    await settle(b)
+
+  asyncio.run(flow())
+  assert sum(p == "/api/app-chats/start" for _, p, _ in api.mobius) == 1
 
 
 def test_a_blocked_person_is_turned_away_without_a_new_request(tmp_path):
