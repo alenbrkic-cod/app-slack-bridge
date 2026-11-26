@@ -1,0 +1,33 @@
+{
+  "id": "slack-bridge",
+  "name": "Slack Bridge",
+  "version": "0.1.0",
+  "description": "Use this Möbius from Slack: @mention or DM the bot and the agent answers in the thread.",
+  "author": "alenbrkic-cod",
+  "homepage": "https://github.com/alenbrkic-cod/app-slack-bridge",
+  "entry": "index.jsx",
+  "icon": "icon.png",
+  "offline_capable": false,
+  "embeds_agent": true,
+  "agent": {
+    "scope": "admin",
+    "reason": "Answers Slack requests from your channels as your agent."
+  },
+  "permissions": {},
+  "schedule": {
+    "default": "* * * * *",
+    "user_configurable": false,
+    "job": "bridge.py"
+  },
+  "python": {
+    "lock": "requirements.lock"
+  },
+  "runtime": {
+    "imports": ["react", "@openai/apps-sdk-ui/components/Icon"],
+    "esm_deps": []
+  },
+  "source_files": [
+    "bridge_core.py",
+    "requirements.lock"
+  ]
+}
