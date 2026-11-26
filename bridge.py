@@ -278,8 +278,8 @@ class Bridge:
        "updated_at": int(time.time())})
 
   async def settle_requests(self) -> None:
-    """Tell waiting people the owner's answer: an allowed person hears it in
-    the thread they asked in; either way their waiting reaction comes off."""
+    """Pass on the owner's answer: an allowed person gets a direct message from
+    the bot, a blocked one hears nothing; either way the waiting mark comes off."""
     requests = self.state.data.get("requests") or {}
     open_ids = [uid for uid, r in requests.items() if not r.get("resolved")]
     if not open_ids:
@@ -300,16 +300,12 @@ class Bridge:
       for place in waiting:
         await self.react(False, place["channel"], place["ts"], WAITING_REACTION)
       if entry["resolved"] == "allowed":  # a decline is not announced
-        if waiting:  # reply where they last asked; plain text so the @mention pings
-          last = waiting[-1]
-          notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
-                    "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
-        else:  # asked before the bridge kept the place: message them directly
-          notice = {"channel": uid, "text": core.ACCESS_GRANTED}
+        # A direct message from the bot, wherever they asked.
+        notice = {"channel": uid, "text": core.ACCESS_GRANTED}
         try:
           await self.slack("chat.postMessage", notice, as_json=True)
         except SlackError as exc:
-          self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
+          self.state.log(user=uid, where=uid, outcome="access notice failed",
                          detail=str(exc)[:200])
       self.state.log(user=uid, name=entry.get("name"), where=entry.get("where"),
                      outcome=entry["resolved"])

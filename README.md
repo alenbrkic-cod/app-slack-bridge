@@ -22,8 +22,8 @@ becomes an **access request** in the app window, and the owner gets one push
 notification per new person. The bot doesn't reply to them. Their message just
 gets a ⏳ reaction. The owner taps **Allow** or **Block**:
 
-- Allowed people are told in the thread where they asked, and can then use the
-  bot from any channel or by DM, until blocked.
+- Allowed people get a direct message from the bot saying they now have access,
+  and can then use it from any channel or by DM, until blocked.
 - Blocked people get no reply and create no new requests, until allowed. The ⏳
   is removed.
 - Guests and other bots are always ignored. Until the owner allows someone,

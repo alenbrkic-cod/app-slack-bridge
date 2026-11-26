@@ -196,7 +196,7 @@ def test_someone_new_becomes_an_access_request_and_the_owner_hears_once(tmp_path
   assert [p["timestamp"] for p in waiting] == ["1.1", "1.2"]
 
 
-def test_allowing_a_requester_tells_them_once_where_they_asked(tmp_path):
+def test_allowing_a_requester_sends_them_one_direct_message(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="3.0", channel="CDEV")))
@@ -204,8 +204,8 @@ def test_allowing_a_requester_tells_them_once_where_they_asked(tmp_path):
   api.access = {"allowed": [{"id": "UANA"}, {"id": "UOUT"}], "blocked": []}
   asyncio.run(b.settle_requests())
   asyncio.run(b.settle_requests())
-  notices = [p for m, p in api.calls if m == "chat.postMessage" and "gave you access" in p.get("text", "")]
-  assert notices == [{"channel": "CDEV", "thread_ts": "3.4", "text": f"<@UOUT> {bridge.core.ACCESS_GRANTED}"}]
+  notices = [p for m, p in api.calls if m == "chat.postMessage"]
+  assert notices == [{"channel": "UOUT", "text": bridge.core.ACCESS_GRANTED}]   # one direct message
   cleared = [p["timestamp"] for m, p in api.calls if m == "reactions.remove" and p["name"] == "hourglass_flowing_sand"]
   assert cleared == ["3.0", "3.4"]
   assert api.saved_requests() == []          # no longer shown as a request
