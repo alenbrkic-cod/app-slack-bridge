@@ -65,8 +65,16 @@ class FakeApi:
     if path.endswith("/messages"):
       return {}
     if method == "GET" and path.startswith("/api/chats/"):
-      return self.chats[path.split("/")[3].split("?")[0]]
+      # Like Möbius: the chat route refuses an app's own token.
+      raise RuntimeError(f"GET {path} -> 403: App token is not valid here.")
     raise AssertionError(path)
+
+  read_refused = False
+
+  def read_chat(self, chat_id, limit=6):
+    if self.read_refused:
+      raise RuntimeError("POST /api/app-chats/x/embed-capability -> 403")
+    return self.chats[chat_id]
 
   def request(self, method, path, body=None, **_):
     self.mobius.append((method, path, body))
@@ -225,6 +233,23 @@ def test_a_card_for_the_owner_is_flagged_and_the_answer_still_arrives(tmp_path):
 
   asyncio.run(flow())
   assert api.posts()[-1]["blocks"][0]["text"] == "Restarted and healthy."
+
+
+def test_an_unreadable_answer_is_reported_instead_of_waiting_silently(tmp_path, monkeypatch):
+  monkeypatch.setattr(bridge, "READ_FAILURES_BEFORE_GIVING_UP", 3)
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  api.read_refused = True
+
+  async def flow():
+    await b.on_event(ev(type="message", channel_type="im", user="UANA", text="hi", ts="6.0", channel="DANA"))
+    await settle(b)
+
+  asyncio.run(flow())
+  [post] = api.posts()
+  assert "can't read the answer back" in post["blocks"][0]["text"]
+  assert "https://m.example/shell/?chat=chat-1" in post["blocks"][0]["text"]
+  assert b.state.data["activity"][0]["outcome"] == "read failed"
 
 
 def test_slack_redelivery_never_starts_a_second_turn(tmp_path):

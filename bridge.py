@@ -34,6 +34,7 @@ GIVE_UP_SECONDS = 12 * 3600
 KEY_RETRY_SECONDS = 10 * 60
 CACHE_SECONDS = 300
 HEARTBEAT_SECONDS = 60
+READ_FAILURES_BEFORE_GIVING_UP = 15     # about a minute of refused reads
 ACTIVITY_KEEP = 30
 SEEN_KEEP = 500
 
@@ -53,14 +54,18 @@ class Mobius:
     self.base = base.rstrip("/")
     self.token = token
     self.app_id = app_id
+    self._readers: dict[str, tuple[float, str]] = {}  # chat_id -> (expiry, session)
 
   def request(self, method: str, path: str, body=None, raw: bytes | None = None,
-              content_type: str = "application/json", timeout: float = 30):
+              content_type: str = "application/json", timeout: float = 30,
+              bearer: str | None = None, headers: dict | None = None):
     data = raw if raw is not None else (
       json.dumps(body).encode() if body is not None else None
     )
     req = urllib.request.Request(self.base + path, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {self.token}")
+    req.add_header("Authorization", f"Bearer {bearer or self.token}")
+    for name, value in (headers or {}).items():
+      req.add_header(name, value)
     if data is not None:
       req.add_header("Content-Type", content_type)
     try:
@@ -70,11 +75,36 @@ class Mobius:
     except urllib.error.HTTPError as err:
       return err.code, dict(err.headers or {}), err.read()
 
-  def json(self, method: str, path: str, body=None) -> dict:
-    status, _, payload = self.request(method, path, body)
+  def json(self, method: str, path: str, body=None, *, bearer: str | None = None,
+           headers: dict | None = None) -> dict:
+    status, _, payload = self.request(method, path, body, bearer=bearer, headers=headers)
     if status >= 400:
       raise RuntimeError(f"{method} {path} -> {status}: {payload[:300]!r}")
     return json.loads(payload or b"{}")
+
+  def read_chat(self, chat_id: str, limit: int = 6) -> dict:
+    """One of this app's own chats, with its messages and running state.
+
+    The owner-only chat route refuses app tokens; an app reads a chat it
+    created through a short-lived participant session for that one chat
+    (the same pass an app's embedded chat panel uses), refreshed before
+    its 15-minute expiry.
+    """
+    instance = f"slack-bridge-job-{chat_id}"
+    expiry, session = self._readers.get(chat_id, (0.0, ""))
+    if time.time() >= expiry:
+      grant = self.json("POST", f"/api/app-chats/{chat_id}/embed-capability",
+                        {"instance_id": instance})
+      session = self.json("POST", "/api/app-chat-embeds/session",
+                          {"instance_id": instance},
+                          bearer=grant["capability"])["token"]
+      self._readers[chat_id] = (time.time() + 12 * 60, session)
+    try:
+      return self.json("GET", f"/api/chats/{chat_id}?limit={limit}", bearer=session,
+                       headers={"X-Mobius-Embed-Instance": instance})
+    except RuntimeError:
+      self._readers.pop(chat_id, None)  # re-mint on the next poll
+      raise
 
   # Slack, through the vault --------------------------------------------------
 
@@ -326,11 +356,20 @@ class Bridge:
     thread = self.state.threads[scope]
     chat_id = thread["chat_id"]
     started = last_busy = time.time()
+    failures = 0
     while time.time() - started < GIVE_UP_SECONDS:
       await asyncio.sleep(POLL_SECONDS)
       try:
-        chat = await asyncio.to_thread(self.api.json, "GET", f"/api/chats/{chat_id}?limit=6")
-      except Exception:  # noqa: BLE001 - transient; try again next poll
+        chat = await asyncio.to_thread(self.api.read_chat, chat_id)
+        failures = 0
+      except Exception as exc:  # noqa: BLE001 - transient unless it persists
+        failures += 1
+        if failures == READ_FAILURES_BEFORE_GIVING_UP:
+          self.state.log(where=thread["channel"], chat_id=chat_id, outcome="read failed",
+                         detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+          await self.finish(scope, "Möbius is working on this, but the bridge can't read "
+                            "the answer back." + self.link_suffix(chat_id))
+          return
         continue
       if not core.chat_is_idle(chat) or chat.get("pending_question_id"):
         last_busy = time.time()  # working, or waiting on the owner's card
