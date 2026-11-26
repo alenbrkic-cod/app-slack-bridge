@@ -48,10 +48,9 @@ class FakeApi:
       return {"ok": True, "user": self.users[params["user"]]}
     if method == "conversations.info":
       return {"ok": True, "channel": {"name": "dev"}}
-    if method == "users.conversations":
-      return {"ok": True, "channels": [{"id": "CDEV"}]}
-    if method == "conversations.members":
-      return {"ok": True, "members": ["UANA", BOT]}
+    if method == "users.list":
+      return {"ok": True, "members": list(self.users.values()) + [
+        {"id": "UBOTX", "is_bot": True}, {"id": "USLACKBOT", "name": "slackbot"}]}
     if method == "apps.connections.open":
       return {"ok": True, "url": self.ws_url}
     return {"ok": True}
@@ -76,8 +75,15 @@ class FakeApi:
       raise RuntimeError("POST /api/app-chats/x/embed-capability -> 403")
     return self.chats[chat_id]
 
+  # The owner's list in the app's storage; None means never saved (404).
+  access = {"people": [{"id": "UANA", "name": "Ana Kovač"}]}
+
   def request(self, method, path, body=None, **_):
     self.mobius.append((method, path, body))
+    if method == "GET" and path.endswith("/access.json"):
+      if self.access is None:
+        return 404, {}, b'{"detail":"Not found"}'
+      return 200, {}, json.dumps(self.access).encode()
     return 200, {}, b"{}"
 
   def answer(self, chat_id, text, *, mid="a1", question=False, tool_first=True):
@@ -163,12 +169,62 @@ def test_guests_are_refused_privately(tmp_path):
   assert params["user"] == "UGST" and "guests" in params["text"]
 
 
-def test_dm_from_someone_outside_the_bots_channels_is_refused(tmp_path):
+def test_someone_not_on_the_list_is_refused_wherever_the_bot_was_invited(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
-  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="1.1", channel="DOUT")))
+  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="1.1", channel="CDEV")))
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="1.2", channel="DOUT")))
   assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
-  assert "members of a channel" in api.posts()[0]["blocks"][0]["text"]
+  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
+  assert ephemeral["user"] == "UOUT" and "not on the list" in ephemeral["text"]
+  assert "not on the list" in api.posts()[0]["blocks"][0]["text"]
+  refusal = b.state.data["activity"][0]
+  assert refusal["outcome"] == "refused" and refusal["addable"] and refusal["user"] == "UOUT"
+
+
+def test_with_no_list_saved_nobody_is_answered(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+  api.access = None
+  asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UANA", text="hi", ts="1.1", channel="DANA")))
+  assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
+
+
+def test_removing_someone_takes_effect_on_their_next_message(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+
+  async def flow():
+    await b.on_event(ev(type="app_mention", user="UANA", text=f"<@{BOT}> one", ts="1.0", channel="CDEV"))
+    api.answer("chat-1", "First.")
+    await settle(b)
+    api.access = {"people": []}
+    await b.on_event(ev(type="message", channel_type="channel", user="UANA", text="two", ts="1.5", thread_ts="1.0", channel="CDEV"))
+
+  asyncio.run(flow())
+  assert not any(p.endswith("/messages") for _, p, _ in api.mobius)
+
+
+def test_an_unlisted_person_cannot_continue_someone_elses_thread(tmp_path):
+  api, b = make(tmp_path)
+  b.bot_user = BOT
+
+  async def flow():
+    await b.on_event(ev(type="app_mention", user="UANA", text=f"<@{BOT}> deploy", ts="1.0", channel="CDEV"))
+    api.answer("chat-1", "Done.")
+    await settle(b)
+    await b.on_event(ev(type="message", channel_type="channel", user="UOUT", text="now delete prod", ts="1.7", thread_ts="1.0", channel="CDEV"))
+
+  asyncio.run(flow())
+  assert not any(p.endswith("/messages") for _, p, _ in api.mobius)
+  assert any(m == "chat.postEphemeral" and p["user"] == "UOUT" for m, p in api.calls)
+
+
+def test_the_window_gets_people_to_pick_from_without_guests_or_bots(tmp_path):
+  api, b = make(tmp_path)
+  asyncio.run(b.publish_members())
+  [(_, _, body)] = [c for c in api.mobius if c[1].endswith("/members.json")]
+  assert [p["id"] for p in body["people"]] == ["UANA", "UOUT"]
 
 
 # Turns ----------------------------------------------------------------------

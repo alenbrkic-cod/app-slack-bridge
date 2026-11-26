@@ -17,10 +17,16 @@ Replies in that thread continue the same conversation.
 
 ## Who can use it
 
-Anyone who is a full member of a Slack channel the bot has been added to, by
-@mention there or by DM. Guests and other bots are ignored. The agent runs with
-the owner's full access to this Möbius, so add the bot only to channels whose
-members you trust.
+Only the people on the owner's list, managed in the app window. They can use
+the bot from any channel or by DM. Everyone else is privately turned away and
+shows up under Recent requests with an **Allow** button. Guests and other bots
+are always refused. With no list saved, nobody is answered.
+
+The list, not channel membership, is the control: on standard Slack plans any
+workspace member can invite an installed app to their channels. The bridge
+reads the list for every message, so removing someone takes effect on their
+next message. Each request runs with the owner's full access to this Möbius,
+so list only people you trust with that.
 
 ## Setup
 
