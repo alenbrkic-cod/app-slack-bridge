@@ -109,22 +109,17 @@ def wants_turn(msg: Incoming, known_thread: bool) -> bool:
 @dataclass(frozen=True)
 class Access:
   allowed: bool
-  reason: str = ""      # shown to the sender when refused
+  reason: str = ""      # why someone was refused, for the owner's window
   request: bool = False  # record (or refresh) an access request for the owner
 
 
-GUEST_REFUSAL = "Sorry, Slack guests can't send requests to Möbius."
-REQUESTED_REFUSAL = (
-  "I've asked the Möbius owner to give you access. Once they approve it, "
-  "just ask again."
-)
-STILL_WAITING_REFUSAL = (
-  "Your access request is still waiting for the Möbius owner's approval."
-)
-BLOCKED_REFUSAL = "Sorry, you don't have access to Möbius here."
-ACCESS_DECLINED = (
-  "Your request to use the Möbius bot wasn't approved by the Möbius owner."
-)
+# Why someone was turned away. The bot says nothing to them (the owner chose
+# silence for pending and declined requests); the reason only shows in the
+# window's recent requests.
+REFUSED_GUEST = "guest"
+REFUSED_BLOCKED = "blocked"
+REFUSED_REQUESTED = "asked for access"
+REFUSED_WAITING = "still waiting for access"
 ACCESS_GRANTED = "The Möbius owner gave you access. Ask me again and I'll get to work."
 
 
@@ -152,15 +147,15 @@ def decide_access(user: dict, access: dict | None, requested: bool) -> Access:
   if user.get("deleted") or user.get("is_bot") or user.get("is_app_user"):
     return Access(False)
   if user.get("is_restricted") or user.get("is_ultra_restricted"):
-    return Access(False, GUEST_REFUSAL)
+    return Access(False, REFUSED_GUEST)
   uid = user.get("id")
   if uid in allowed_ids(access):
     return Access(True)
   if uid in blocked_ids(access):
-    return Access(False, BLOCKED_REFUSAL)
+    return Access(False, REFUSED_BLOCKED)
   if requested:
-    return Access(False, STILL_WAITING_REFUSAL, request=True)
-  return Access(False, REQUESTED_REFUSAL, request=True)
+    return Access(False, REFUSED_WAITING, request=True)
+  return Access(False, REFUSED_REQUESTED, request=True)
 
 
 def person(user: dict) -> dict:

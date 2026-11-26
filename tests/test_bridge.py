@@ -167,13 +167,18 @@ def test_mentions_are_named_and_the_bot_mention_dropped():
 
 # Access ---------------------------------------------------------------------
 
-def test_guests_are_refused_privately(tmp_path):
+def said_anything(api):
+  """Whether the bot posted any message (public or private) to Slack."""
+  return any(m in ("chat.postMessage", "chat.postEphemeral") for m, _ in api.calls)
+
+
+def test_guests_are_ignored_silently_and_never_become_requests(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   asyncio.run(b.on_event(ev(type="app_mention", user="UGST", text=f"<@{BOT}> rm -rf", ts="1.1", channel="CDEV")))
   assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
-  [(method, params)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
-  assert params["user"] == "UGST" and "guests" in params["text"]
+  assert not said_anything(api) and not api.saved_requests()
+  assert b.state.data["activity"][0]["detail"] == "guest"
 
 
 def test_someone_new_becomes_an_access_request_and_the_owner_hears_once(tmp_path):
@@ -182,25 +187,13 @@ def test_someone_new_becomes_an_access_request_and_the_owner_hears_once(tmp_path
   asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="1.1", channel="CDEV")))
   asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi again", ts="1.2", channel="DOUT")))
   assert not any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
-  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
-  assert ephemeral["user"] == "UOUT" and "asked the Möbius owner" in ephemeral["text"]
-  assert "still waiting" in api.posts()[0]["blocks"][0]["text"]
+  assert not said_anything(api)   # pending requests get no reply, only the waiting mark
   [request] = api.saved_requests()
   assert request["id"] == "UOUT" and request["count"] == 2 and request["where"] == "a direct message to the Möbius bot"
   [push] = api.pushes()
   assert "asked to use the Möbius bot in #dev" in push["body"] and push["target"] == "/shell/?app=7"
-  # A fresh mention has no thread yet, and Slack hides private notes there.
-  assert "thread_ts" not in ephemeral
   waiting = [p for m, p in api.calls if m == "reactions.add" and p["name"] == "hourglass_flowing_sand"]
   assert [p["timestamp"] for p in waiting] == ["1.1", "1.2"]
-
-
-def test_inside_an_existing_thread_the_private_note_stays_in_that_thread(tmp_path):
-  api, b = make(tmp_path)
-  b.bot_user = BOT
-  asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="2.5", thread_ts="2.0", channel="CDEV")))
-  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
-  assert ephemeral["thread_ts"] == "2.0"
 
 
 def test_allowing_a_requester_tells_them_once_where_they_asked(tmp_path):
@@ -228,15 +221,14 @@ def test_a_request_saved_by_0_3_without_its_place_is_answered_by_direct_message(
   assert notice == {"channel": "UOUT", "text": bridge.core.ACCESS_GRANTED}
 
 
-def test_blocking_a_requester_tells_them_privately_and_clears_their_waiting_mark(tmp_path):
+def test_blocking_a_requester_says_nothing_and_clears_their_waiting_mark(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="4.0", channel="DOUT")))
   api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
   asyncio.run(b.settle_requests())
   asyncio.run(b.settle_requests())
-  notices = [p for m, p in api.calls if m == "chat.postMessage" and p["channel"] == "UOUT"]
-  assert notices == [{"channel": "UOUT", "text": bridge.core.ACCESS_DECLINED}]  # privately, once
+  assert not said_anything(api)
   assert any(m == "reactions.remove" and p["timestamp"] == "4.0" for m, p in api.calls)
 
 
@@ -262,8 +254,7 @@ def test_a_blocked_person_is_turned_away_without_a_new_request(tmp_path):
   b.bot_user = BOT
   api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
   asyncio.run(b.on_event(ev(type="app_mention", user="UOUT", text=f"<@{BOT}> hi", ts="1.1", channel="CDEV")))
-  [(_, ephemeral)] = [c for c in api.calls if c[0] == "chat.postEphemeral"]
-  assert "don't have access" in ephemeral["text"]
+  assert not said_anything(api)
   assert not api.saved_requests() and not api.pushes()
 
 
@@ -338,7 +329,7 @@ def test_someone_not_allowed_cannot_continue_someone_elses_thread(tmp_path):
 
   asyncio.run(flow())
   assert not any(p.endswith("/messages") for _, p, _ in api.mobius)
-  assert any(m == "chat.postEphemeral" and p["user"] == "UOUT" for m, p in api.calls)
+  assert not any(m == "chat.postEphemeral" for m, p in api.calls)
 
 
 # Turns ----------------------------------------------------------------------

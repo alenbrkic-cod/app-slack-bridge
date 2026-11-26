@@ -226,7 +226,8 @@ export default function App({ token }) {
           <p className="sb-sub" style={{ marginBottom: 12 }}>
             Anyone who tries the bot in Slack shows up here as a request. Allowed people can
             use it from any channel or by direct message, and each request runs as you with
-            full access to this Möbius. Everyone else is privately turned away.
+            full access to this Möbius. Everyone else gets no answer; their message just
+            shows ⏳ until you decide.
           </p>
           <People state={people} />
         </section>

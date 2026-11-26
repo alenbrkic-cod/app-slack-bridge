@@ -18,13 +18,15 @@ Replies in that thread continue the same conversation.
 ## Who can use it
 
 Only people the owner has allowed. Anyone else who @mentions or DMs the bot
-becomes an **access request** in the app window. They are told their request
-went to the owner, and the owner gets one push notification per new person.
-The owner taps **Allow** or **Block**:
+becomes an **access request** in the app window, and the owner gets one push
+notification per new person. The bot doesn't reply to them. Their message just
+gets a ⏳ reaction. The owner taps **Allow** or **Block**:
 
-- Allowed people can use the bot from any channel or by DM, until blocked.
-- Blocked people are turned away without creating new requests, until allowed.
-- Guests and other bots are always refused. Until the owner allows someone,
+- Allowed people are told in the thread where they asked, and can then use the
+  bot from any channel or by DM, until blocked.
+- Blocked people get no reply and create no new requests, until allowed. The ⏳
+  is removed.
+- Guests and other bots are always ignored. Until the owner allows someone,
   nobody is answered, the owner included: try the bot once and allow yourself.
 
 The owner's per-person decision, not channel membership, is the control: on

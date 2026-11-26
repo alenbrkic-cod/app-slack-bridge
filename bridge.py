@@ -39,7 +39,8 @@ REQUESTS_FILE = "requests.json"  # people who asked, written only by this job
 REQUEST_RENOTIFY_SECONDS = 24 * 3600
 WAITING_REACTION = "hourglass_flowing_sand"  # on a message whose sender awaits access
 WAITING_KEEP = 5
-DECISION_POLL_SECONDS = 15  # how soon an Allow reaches the person waiting
+DECISION_POLL_SECONDS = 15
+CHECK_FAILED = "Möbius can't check access right now. Please try again shortly."  # how soon an Allow reaches the person waiting
 READ_FAILURES_BEFORE_GIVING_UP = 15     # about a minute of refused reads
 ACTIVITY_KEEP = 30
 SEEN_KEEP = 500
@@ -298,21 +299,18 @@ class Bridge:
       waiting = entry.get("waiting") or []
       for place in waiting:
         await self.react(False, place["channel"], place["ts"], WAITING_REACTION)
-      if entry["resolved"] == "allowed" and waiting:
-        # Reply where they last asked; plain text so the @mention pings.
-        last = waiting[-1]
-        notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
-                  "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
-      else:
-        # A refusal stays private, and a request kept without its place has
-        # nowhere else to go: a direct message from the bot reaches them either way.
-        notice = {"channel": uid, "text": core.ACCESS_GRANTED
-                  if entry["resolved"] == "allowed" else core.ACCESS_DECLINED}
-      try:
-        await self.slack("chat.postMessage", notice, as_json=True)
-      except SlackError as exc:
-        self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
-                       detail=str(exc)[:200])
+      if entry["resolved"] == "allowed":  # a decline is not announced
+        if waiting:  # reply where they last asked; plain text so the @mention pings
+          last = waiting[-1]
+          notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
+                    "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
+        else:  # asked before the bridge kept the place: message them directly
+          notice = {"channel": uid, "text": core.ACCESS_GRANTED}
+        try:
+          await self.slack("chat.postMessage", notice, as_json=True)
+        except SlackError as exc:
+          self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
+                         detail=str(exc)[:200])
       self.state.log(user=uid, name=entry.get("name"), where=entry.get("where"),
                      outcome=entry["resolved"])
     if changed:
@@ -352,7 +350,7 @@ class Bridge:
     user = await self.user(msg.user)
     decisions = await self.access()
     if decisions is None:
-      access = core.Access(False, "Möbius can't check access right now. Please try again shortly.")
+      access = core.Access(False, CHECK_FAILED)
     else:
       asked = (self.state.data.get("requests") or {}).get(msg.user) or {}
       pending = bool(asked) and not asked.get("resolved")
@@ -361,24 +359,11 @@ class Bridge:
       where = await self.where(msg)
       if access.request:
         await self.record_request(user, where, msg)
-      detail = {
-        core.GUEST_REFUSAL: "guest", core.BLOCKED_REFUSAL: "blocked",
-        core.REQUESTED_REFUSAL: "asked for access",
-        core.STILL_WAITING_REFUSAL: "asked for access",
-      }.get(access.reason, access.reason or "bot or deactivated user")
       self.state.log(user=msg.user, name=core.display_name(user), where=where,
-                     outcome="refused", detail=detail)
+                     outcome="refused", detail=access.reason or "bot or deactivated user")
       self.state.save()
-      if access.reason:
-        if msg.is_dm:
-          await self.post(msg.channel, msg.thread_ts, access.reason)
-        else:
-          # Slack only shows a private note inside a thread that already has
-          # replies; for a fresh top-level mention it would silently vanish.
-          note = {"channel": msg.channel, "user": msg.user, "text": access.reason}
-          if msg.thread_ts != msg.ts:
-            note["thread_ts"] = msg.thread_ts
-          await self.slack("chat.postEphemeral", note)
+      if access.reason == CHECK_FAILED:  # a fault, not a decision: say so
+        await self.post(msg.channel, msg.thread_ts, CHECK_FAILED)
       return
     lock = self.locks.setdefault(msg.scope, asyncio.Lock())
     async with lock:
