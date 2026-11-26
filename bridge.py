@@ -298,18 +298,21 @@ class Bridge:
       waiting = entry.get("waiting") or []
       for place in waiting:
         await self.react(False, place["channel"], place["ts"], WAITING_REACTION)
-      if entry["resolved"] == "allowed":
-        if waiting:  # reply where they last asked; plain text so the @mention pings
-          last = waiting[-1]
-          notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
-                    "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
-        else:  # asked before the bridge kept the place: message them directly
-          notice = {"channel": uid, "text": core.ACCESS_GRANTED}
-        try:
-          await self.slack("chat.postMessage", notice, as_json=True)
-        except SlackError as exc:
-          self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
-                         detail=str(exc)[:200])
+      if entry["resolved"] == "allowed" and waiting:
+        # Reply where they last asked; plain text so the @mention pings.
+        last = waiting[-1]
+        notice = {"channel": last["channel"], "thread_ts": last["thread_ts"],
+                  "text": core.ACCESS_GRANTED if last["dm"] else f"<@{uid}> {core.ACCESS_GRANTED}"}
+      else:
+        # A refusal stays private, and a request kept without its place has
+        # nowhere else to go: a direct message from the bot reaches them either way.
+        notice = {"channel": uid, "text": core.ACCESS_GRANTED
+                  if entry["resolved"] == "allowed" else core.ACCESS_DECLINED}
+      try:
+        await self.slack("chat.postMessage", notice, as_json=True)
+      except SlackError as exc:
+        self.state.log(user=uid, where=notice["channel"], outcome="access notice failed",
+                       detail=str(exc)[:200])
       self.state.log(user=uid, name=entry.get("name"), where=entry.get("where"),
                      outcome=entry["resolved"])
     if changed:
@@ -508,8 +511,20 @@ class Bridge:
 
 # Status shown in the app's window --------------------------------------------
 
+def running_version() -> str:
+  """The version of the code this job is actually running (its own manifest)."""
+  try:
+    return json.loads((Path(__file__).resolve().parent / "mobius.json").read_text()).get("version", "")
+  except (OSError, ValueError):
+    return ""
+
+
+VERSION = running_version()
+
+
 def write_status(api: Mobius, bridge: Bridge | None, **status) -> None:
   status["updated_at"] = int(time.time())
+  status["version"] = VERSION
   if bridge is not None:
     status.setdefault("bot", {"name": bridge.bot_name, "team": bridge.team_name})
     status["threads"] = len(bridge.state.threads)

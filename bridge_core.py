@@ -122,6 +122,9 @@ STILL_WAITING_REFUSAL = (
   "Your access request is still waiting for the Möbius owner's approval."
 )
 BLOCKED_REFUSAL = "Sorry, you don't have access to Möbius here."
+ACCESS_DECLINED = (
+  "Your request to use the Möbius bot wasn't approved by the Möbius owner."
+)
 ACCESS_GRANTED = "The Möbius owner gave you access. Ask me again and I'll get to work."
 
 

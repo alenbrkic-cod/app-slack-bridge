@@ -57,6 +57,7 @@ const CSS = `
   .tone-warn { --sb-tone: var(--warning); } .tone-bad { --sb-tone: var(--danger); }
   .sb-hero h1 { font-size: 19px; margin: 0 0 4px; font-weight: 650; }
   .sb-sub { color: var(--muted); font-size: 14px; line-height: 1.45; margin: 0; }
+  .sb-version { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
   .sb-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; }
   .sb-card h2 { font-size: 15px; margin: 0 0 12px; font-weight: 650; }
   .sb-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
@@ -214,6 +215,7 @@ export default function App({ token }) {
           <div>
             <h1>{view.title}</h1>
             <p className="sb-sub">{sub}</p>
+            {status?.version && <p className="sb-version">Running version {status.version}</p>}
           </div>
         </section>
 

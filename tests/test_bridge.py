@@ -228,13 +228,15 @@ def test_a_request_saved_by_0_3_without_its_place_is_answered_by_direct_message(
   assert notice == {"channel": "UOUT", "text": bridge.core.ACCESS_GRANTED}
 
 
-def test_blocking_a_requester_clears_their_waiting_mark_quietly(tmp_path):
+def test_blocking_a_requester_tells_them_privately_and_clears_their_waiting_mark(tmp_path):
   api, b = make(tmp_path)
   b.bot_user = BOT
   asyncio.run(b.on_event(ev(type="message", channel_type="im", user="UOUT", text="hi", ts="4.0", channel="DOUT")))
   api.access = {"allowed": [], "blocked": [{"id": "UOUT"}]}
   asyncio.run(b.settle_requests())
-  assert not any("gave you access" in str(p) for m, p in api.calls if m == "chat.postMessage")
+  asyncio.run(b.settle_requests())
+  notices = [p for m, p in api.calls if m == "chat.postMessage" and p["channel"] == "UOUT"]
+  assert notices == [{"channel": "UOUT", "text": bridge.core.ACCESS_DECLINED}]  # privately, once
   assert any(m == "reactions.remove" and p["timestamp"] == "4.0" for m, p in api.calls)
 
 
@@ -484,6 +486,15 @@ def test_socket_mode_acks_every_envelope_and_dispatches_events(tmp_path):
   assert acks[0] == {"envelope_id": "e1"}
   assert any(p == "/api/app-chats/start" for _, p, _ in api.mobius)
   assert any(p.endswith("/status.json") and (body or {}).get("state") == "connected" for _, p, body in api.mobius)
+
+
+def test_the_window_is_told_which_version_is_running(tmp_path):
+  import json as _json
+  api = FakeApi()
+  bridge.write_status(api, None, state="connecting")
+  [(_, _, status)] = api.mobius
+  expected = _json.loads((Path(bridge.__file__).parent / "mobius.json").read_text())["version"]
+  assert status["version"] == expected and expected
 
 
 def test_missing_keys_wait_quietly_and_retry_later(tmp_path):
